@@ -8,7 +8,7 @@ import fs from 'fs';
 import Database from 'better-sqlite3';
 import QRCode from 'qrcode';
 import pino from 'pino';
-import makeWASocket, { useMultiFileAuthState, DisconnectReason } from '@whiskeysockets/baileys';
+import makeWASocket, { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } from '@whiskeysockets/baileys';
 
 dotenv.config();
 
@@ -159,11 +159,14 @@ let connected = false;
 
 async function startWhatsApp() {
   const { state, saveCreds } = await useMultiFileAuthState(path.join(__dirname, 'data', 'baileys-auth'));
+  const { version } = await fetchLatestBaileysVersion();
 
   sock = makeWASocket({
+    version,
     auth: state,
     printQRInTerminal: false, // QR via HTTP
-    logger: pino({ level: 'info' })
+    browser: ['Coolify', 'Chrome', '1.0.0'],
+    logger: pino({ level: process.env.BAILEYS_LOG_LEVEL || 'info' })
   });
 
   sock.ev.on('creds.update', saveCreds);
