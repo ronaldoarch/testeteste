@@ -2,10 +2,10 @@ FROM node:20-alpine
 
 WORKDIR /app
 COPY package.json package-lock.json* ./
-# Dependências de build (better-sqlite3 e outras nativas) no Alpine
-RUN apk add --no-cache python3 make g++ \
+# Dependências de build (better-sqlite3 e outras nativas) no Alpine + git para deps que referenciam repositórios
+RUN apk add --no-cache git python3 make g++ \
   && npm install --omit=dev \
-  && apk del python3 make g++
+  && apk del git python3 make g++
 
 COPY . .
 RUN mkdir -p data public
