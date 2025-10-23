@@ -110,13 +110,13 @@ function resetConversation(userJid) {
 }
 
 // ---------- LLM ----------
+const LLM_PROVIDER = (process.env.LLM_PROVIDER || 'openai').toLowerCase();
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+const OLLAMA_HOST = process.env.OLLAMA_HOST || 'http://localhost:11434';
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'llama3.1';
 
 async function askLLMWithMemory(userJid, userMessage) {
-  if (!OPENAI_API_KEY) {
-    return 'O servidor não está configurado com a OPENAI_API_KEY. Tente novamente mais tarde.';
-  }
   const { system_prompt, temperature } = getSettings();
 
   // histórico curto (ex.: 10 turns - pode ajustar)
@@ -127,6 +127,37 @@ async function askLLMWithMemory(userJid, userMessage) {
     ...history.map(h => ({ role: h.role, content: h.content })),
     { role: 'user', content: userMessage }
   ];
+
+  if (LLM_PROVIDER === 'ollama') {
+    try {
+      const res = await fetch(`${OLLAMA_HOST}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: OLLAMA_MODEL,
+          messages,
+          stream: false,
+          options: { temperature: Number(temperature) }
+        })
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        console.error('Ollama error:', res.status, text);
+        return 'Desculpe, tive um problema ao gerar a resposta.';
+      }
+      const data = await res.json();
+      const reply = data?.message?.content?.trim() || data?.response?.trim() || 'Desculpe, não consegui gerar uma resposta agora.';
+      return reply;
+    } catch (e) {
+      console.error('Ollama fetch error:', e);
+      return 'Desculpe, tive um problema ao gerar a resposta.';
+    }
+  }
+
+  // default: OpenAI
+  if (!OPENAI_API_KEY) {
+    return 'O servidor não está configurado com a OPENAI_API_KEY. Tente novamente mais tarde.';
+  }
 
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
@@ -143,7 +174,7 @@ async function askLLMWithMemory(userJid, userMessage) {
 
   if (!res.ok) {
     const text = await res.text();
-    console.error('LLM error:', res.status, text);
+    console.error('OpenAI error:', res.status, text);
     return 'Desculpe, tive um problema ao gerar a resposta.';
   }
 
