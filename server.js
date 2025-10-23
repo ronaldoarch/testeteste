@@ -8,7 +8,7 @@ import fs from 'fs';
 import Database from 'better-sqlite3';
 import QRCode from 'qrcode';
 import pino from 'pino';
-import makeWASocket, { useMultiFileAuthState, DisconnectReason } from '@adiwajshing/baileys';
+import makeWASocket, { useMultiFileAuthState, DisconnectReason } from '@whiskeysockets/baileys';
 
 dotenv.config();
 

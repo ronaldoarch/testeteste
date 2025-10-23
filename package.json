@@ -7,7 +7,7 @@
       "dev": "node --watch server.js"
     },
     "dependencies": {
-      "@adiwajshing/baileys": "^6.7.8",
+      "@whiskeysockets/baileys": "^6.7.8",
       "better-sqlite3": "^9.4.0",
       "dotenv": "^16.4.5",
       "express": "^4.19.2",
