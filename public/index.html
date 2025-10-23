@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <title>Agente WhatsApp – Admin</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; max-width: 900px; margin: 32px auto; padding: 0 16px; }
+      h1 { margin-bottom: 8px; }
+      .muted { color: #666; }
+      .grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
+      .card { border: 1px solid #ddd; border-radius: 10px; padding: 16px; }
+      label { display: block; margin: 8px 0; font-weight: 600; }
+      textarea { width: 100%; min-height: 180px; padding: 10px; font: inherit; }
+      input[type="range"] { width: 100%; }
+      button { padding: 10px 16px; border: 0; border-radius: 8px; font-weight: 600; cursor: pointer; background: black; color: white; }
+      .row { display: flex; gap: 12px; align-items: center; }
+      .ok { color: #0a7; }
+      .err { color: #c33; }
+      .status-dot { width:10px;height:10px;border-radius:50%;display:inline-block;margin-right:6px; }
+    </style>
+  </head>
+  <body>
+    <h1>Agente WhatsApp – Admin</h1>
+    <p class="muted">Edite o prompt e a temperatura. Escaneie o QR para conectar o número.</p>
+
+    <div class="grid">
+      <div class="card">
+        <div class="row">
+          <div id="connDot" class="status-dot" style="background:#ccc;"></div>
+          <div id="connText">Verificando conexão…</div>
+        </div>
+        <div style="margin-top:12px;">
+          <img id="qrImg" alt="QR" style="display:none;border:1px solid #eee;border-radius:8px;padding:8px;" />
+          <div id="qrHint" class="muted" style="display:none;margin-top:8px;">Abra o WhatsApp → Aparelhos conectados → Conectar um aparelho e escaneie.</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <label for="prompt">Prompt do sistema</label>
+        <textarea id="prompt"></textarea>
+
+        <label for="temp">Temperatura: <span id="tempValue">0.7</span></label>
+        <input id="temp" type="range" min="0" max="2" step="0.1" value="0.7"/>
+
+        <div class="row" style="margin-top:12px;">
+          <button id="saveBtn">Salvar</button>
+          <span id="status"></span>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const promptEl = document.getElementById('prompt');
+      const tempEl = document.getElementById('temp');
+      const tempValueEl = document.getElementById('tempValue');
+      const saveBtn = document.getElementById('saveBtn');
+      const statusEl = document.getElementById('status');
+      const connDot = document.getElementById('connDot');
+      const connText = document.getElementById('connText');
+      const qrImg = document.getElementById('qrImg');
+      const qrHint = document.getElementById('qrHint');
+
+      async function loadSettings() {
+        const res = await fetch('/api/settings');
+        const data = await res.json();
+        promptEl.value = data.system_prompt || '';
+        tempEl.value = data.temperature ?? 0.7;
+        tempValueEl.textContent = tempEl.value;
+      }
+
+      async function pollStatus() {
+        try {
+          const s = await (await fetch('/admin/status')).json();
+          connDot.style.background = s.connected ? '#0a7' : (s.hasQR ? '#f90' : '#c33');
+          connText.textContent = s.connected ? 'Conectado ao WhatsApp' : (s.hasQR ? 'Aguardando conexão: escaneie o QR' : 'Aguardando QR…');
+          if (s.hasQR) {
+            qrImg.src = '/admin/qr.png?ts=' + Date.now();
+            qrImg.style.display = 'block';
+            qrHint.style.display = 'block';
+          } else {
+            qrImg.style.display = 'none';
+            qrHint.style.display = 'none';
+          }
+        } catch {}
+      }
+
+      tempEl.addEventListener('input', () => tempValueEl.textContent = tempEl.value);
+
+      saveBtn.addEventListener('click', async () => {
+        statusEl.textContent = '';
+        try {
+          const res = await fetch('/api/settings', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ system_prompt: promptEl.value, temperature: parseFloat(tempEl.value) })
+          });
+          const data = await res.json();
+          if (data.ok) { statusEl.textContent = 'Salvo!'; statusEl.className = 'ok'; }
+          else { statusEl.textContent = data.error || 'Erro'; statusEl.className = 'err'; }
+        } catch {
+          statusEl.textContent = 'Erro de rede';
+          statusEl.className = 'err';
+        }
+      });
+
+      loadSettings();
+      pollStatus();
+      setInterval(pollStatus, 2000);
+    </script>
+  </body>
+</html>
