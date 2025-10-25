@@ -116,20 +116,40 @@ const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 const OLLAMA_HOST = process.env.OLLAMA_HOST || 'http://localhost:11434';
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'llama3.1';
 
+// Limites e controle de latência/conciso
+const HISTORY_LIMIT = Number(process.env.HISTORY_LIMIT || 6);
+const MAX_TOKENS = Number(process.env.MAX_TOKENS || 120);
+const LLM_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS || 15000);
+const REPLY_SENTENCES_LIMIT = Number(process.env.REPLY_SENTENCES_LIMIT || 2);
+const CONCISE_HINT = process.env.CONCISE_HINT || 'Seja extremamente conciso: responda em português com no máximo 2 frases objetivas.';
+
+function enforceConciseness(text) {
+  if (!text || typeof text !== 'string') return text;
+  const maxChars = Number(process.env.MAX_CHARS || 450);
+  const sentences = text.split(/(?<=[.!?])\s+/);
+  const trimmed = sentences.slice(0, REPLY_SENTENCES_LIMIT).join(' ').trim();
+  let result = trimmed || text.trim();
+  if (result.length > maxChars) result = result.slice(0, maxChars).trim() + '…';
+  return result;
+}
+
 async function askLLMWithMemory(userJid, userMessage) {
   const { system_prompt, temperature } = getSettings();
 
   // histórico curto (ex.: 10 turns - pode ajustar)
-  const history = getRecentConversation(userJid, 10);
+  const history = getRecentConversation(userJid, HISTORY_LIMIT);
 
   const messages = [
     { role: 'system', content: system_prompt },
+    { role: 'system', content: CONCISE_HINT },
     ...history.map(h => ({ role: h.role, content: h.content })),
     { role: 'user', content: userMessage }
   ];
 
   if (LLM_PROVIDER === 'ollama') {
     try {
+      const controller = new AbortController();
+      const to = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
       const res = await fetch(`${OLLAMA_HOST}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -137,9 +157,11 @@ async function askLLMWithMemory(userJid, userMessage) {
           model: OLLAMA_MODEL,
           messages,
           stream: false,
-          options: { temperature: Number(temperature) }
-        })
+          options: { temperature: Number(temperature), num_predict: MAX_TOKENS }
+        }),
+        signal: controller.signal
       });
+      clearTimeout(to);
       if (!res.ok) {
         const text = await res.text();
         console.error('Ollama error:', res.status, text);
@@ -147,8 +169,11 @@ async function askLLMWithMemory(userJid, userMessage) {
       }
       const data = await res.json();
       const reply = data?.message?.content?.trim() || data?.response?.trim() || 'Desculpe, não consegui gerar uma resposta agora.';
-      return reply;
+      return enforceConciseness(reply);
     } catch (e) {
+      if (e?.name === 'AbortError') {
+        return 'Desculpe, estou demorando para responder. Tente novamente com uma pergunta mais objetiva.';
+      }
       console.error('Ollama fetch error:', e);
       return 'Desculpe, tive um problema ao gerar a resposta.';
     }
@@ -159,6 +184,8 @@ async function askLLMWithMemory(userJid, userMessage) {
     return 'O servidor não está configurado com a OPENAI_API_KEY. Tente novamente mais tarde.';
   }
 
+  const controller = new AbortController();
+  const to = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
@@ -168,9 +195,12 @@ async function askLLMWithMemory(userJid, userMessage) {
     body: JSON.stringify({
       model: OPENAI_MODEL,
       temperature: Number(temperature),
+      max_tokens: MAX_TOKENS,
       messages
-    })
+    }),
+    signal: controller.signal
   });
+  clearTimeout(to);
 
   if (!res.ok) {
     const text = await res.text();
@@ -180,7 +210,7 @@ async function askLLMWithMemory(userJid, userMessage) {
 
   const data = await res.json();
   const reply = data.choices?.[0]?.message?.content?.trim() || 'Desculpe, não consegui gerar uma resposta agora.';
-  return reply;
+  return enforceConciseness(reply);
 }
 
 // ---------- WhatsApp via Baileys ----------
@@ -252,6 +282,14 @@ async function startWhatsApp() {
       // salva a mensagem do usuário antes (para contexto em chamadas futuras)
       saveMessage(userJid, 'user', text);
 
+      let typingInterval;
+      try {
+        await sock.sendPresenceUpdate('composing', userJid);
+      } catch {}
+      typingInterval = setInterval(() => {
+        sock.sendPresenceUpdate('composing', userJid).catch(() => {});
+      }, 7000);
+
       const reply = await askLLMWithMemory(userJid, text);
 
       // salva resposta do assistente
@@ -260,6 +298,8 @@ async function startWhatsApp() {
       // mantém só os últimos N registros
       trimConversation(userJid, 20); // mantém ~20 mensagens (10 pares)
       await sock.sendMessage(userJid, { text: reply });
+      clearInterval(typingInterval);
+      try { await sock.sendPresenceUpdate('paused', userJid); } catch {}
     } catch (e) {
       console.error('Atendimento error:', e);
       await sock.sendMessage(userJid, { text: 'Tive um problema ao responder agora. Tente novamente.' });
