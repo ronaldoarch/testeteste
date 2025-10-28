@@ -121,7 +121,7 @@ const HISTORY_LIMIT = Number(process.env.HISTORY_LIMIT || 6);
 const MAX_TOKENS = Number(process.env.MAX_TOKENS || 120);
 const LLM_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS || 15000);
 const REPLY_SENTENCES_LIMIT = Number(process.env.REPLY_SENTENCES_LIMIT || 2);
-const CONCISE_HINT = process.env.CONCISE_HINT || 'Seja extremamente conciso: responda em português com no máximo 2 frases objetivas.';
+const CONCISE_HINT = process.env.CONCISE_HINT || 'Seja objetivo e responda em português. Se listar itens, inclua todas as URLs completas (sem encurtar). Evite dizer que enviará links; forneça-os diretamente. Priorize clareza e completude sobre concisão extrema.';
 
 function enforceConciseness(text) {
   if (!text || typeof text !== 'string') return text;
