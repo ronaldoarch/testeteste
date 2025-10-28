@@ -123,6 +123,7 @@ const LLM_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS || 15000);
 const REPLY_SENTENCES_LIMIT = Number(process.env.REPLY_SENTENCES_LIMIT || 2);
 const CONCISE_HINT = process.env.CONCISE_HINT || 'Seja objetivo e responda em português. Se listar itens, inclua todas as URLs completas (sem encurtar). Evite dizer que enviará links; forneça-os diretamente. Priorize clareza e completude sobre concisão extrema.';
 const LINKS_MAX = Number(process.env.LINKS_MAX || 5);
+const MAIN_LINK = process.env.MAIN_LINK || 'https://cravodasorte.net';
 
 function enforceConciseness(text) {
   if (!text || typeof text !== 'string') return text;
@@ -320,6 +321,27 @@ async function startWhatsApp() {
       typingInterval = setInterval(() => {
         sock.sendPresenceUpdate('composing', userJid).catch(() => {});
       }, 7000);
+
+      // Regras rápidas: respostas curtas, explicativas, com link
+      const t = text.trim().toLowerCase();
+      const saidYes = /\b(sim|já joguei|ja joguei)\b/.test(t) && t.length <= 25;
+      const saidNever = /(nunca\s*joguei|nao\s*joguei|não\s*joguei|primeira\s*vez)/.test(t);
+      if (saidYes) {
+        const quick = `Muito bem! Estou te enviando o link para iniciar suas jogadas: ${MAIN_LINK}`;
+        saveMessage(userJid, 'assistant', quick);
+        await sock.sendMessage(userJid, { text: quick });
+        clearInterval(typingInterval);
+        try { await sock.sendPresenceUpdate('paused', userJid); } catch {}
+        return;
+      }
+      if (saidNever) {
+        const quick = `Entendo perfeitamente! Aqui está o link para se cadastrar e começar: ${MAIN_LINK}. Qualquer dúvida, pode falar comigo por aqui.`;
+        saveMessage(userJid, 'assistant', quick);
+        await sock.sendMessage(userJid, { text: quick });
+        clearInterval(typingInterval);
+        try { await sock.sendPresenceUpdate('paused', userJid); } catch {}
+        return;
+      }
 
       const reply = await askLLMWithMemory(userJid, text);
 
