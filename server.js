@@ -141,6 +141,17 @@ function formatLinksIfPresent(text) {
 
   const links = [];
 
+  function inferLinkLabel(url) {
+    const u = String(url).toLowerCase();
+    if (/(\.mp4|\.mov|\.m4v)$/.test(u) || u.includes('video')) return 'Vídeo tutorial';
+    if (u.includes('pix')) return 'Cadastro Pix';
+    if (u.includes('cadastro') || u.includes('signup') || u.includes('register')) return 'Cadastro';
+    if (u.includes('apk') || u.includes('android')) return 'App Android';
+    if (u.includes('ios') || u.includes('iphone') || u.includes('testflight') || u.includes('ipa')) return 'App iOS';
+    if (u.includes('ajuda') || u.includes('help') || u.includes('suporte') || u.includes('faq')) return 'Ajuda';
+    return 'Link útil';
+  }
+
   // Captura [título](url)
   const mdRegex = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g;
   let m;
@@ -161,7 +172,10 @@ function formatLinksIfPresent(text) {
   if (links.length === 0) return text;
 
   const max = Math.min(links.length, LINKS_MAX);
-  const lines = links.slice(0, max).map((l, i) => `${i + 1}. ${l.title ? `${l.title}: ` : ''}${l.url}`);
+  const lines = links.slice(0, max).map((l, i) => {
+    const label = l.title && l.title.length > 2 ? l.title : inferLinkLabel(l.url);
+    return `${i + 1}. ${label}: ${l.url}`;
+  });
   return lines.join('\n');
 }
 
