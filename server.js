@@ -122,6 +122,7 @@ const MAX_TOKENS = Number(process.env.MAX_TOKENS || 120);
 const LLM_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS || 15000);
 const REPLY_SENTENCES_LIMIT = Number(process.env.REPLY_SENTENCES_LIMIT || 2);
 const CONCISE_HINT = process.env.CONCISE_HINT || 'Seja objetivo e responda em português. Se listar itens, inclua todas as URLs completas (sem encurtar). Evite dizer que enviará links; forneça-os diretamente. Priorize clareza e completude sobre concisão extrema.';
+const LINKS_MAX = Number(process.env.LINKS_MAX || 5);
 
 function enforceConciseness(text) {
   if (!text || typeof text !== 'string') return text;
@@ -131,6 +132,36 @@ function enforceConciseness(text) {
   let result = trimmed || text.trim();
   if (result.length > maxChars) result = result.slice(0, maxChars).trim() + '…';
   return result;
+}
+
+// Quando houver links na resposta, normaliza para uma lista curta e limpa
+function formatLinksIfPresent(text) {
+  if (!text || typeof text !== 'string') return text;
+
+  const links = [];
+
+  // Captura [título](url)
+  const mdRegex = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g;
+  let m;
+  while ((m = mdRegex.exec(text)) !== null) {
+    const title = (m[1] || '').trim();
+    const url = m[2];
+    links.push({ title, url });
+  }
+
+  // Captura URLs soltas
+  const urlRegex = /(https?:\/\/[^\s)]+)(?![^\[]*\))/g;
+  let u;
+  while ((u = urlRegex.exec(text)) !== null) {
+    const url = u[1];
+    if (!links.some(l => l.url === url)) links.push({ title: null, url });
+  }
+
+  if (links.length === 0) return text;
+
+  const max = Math.min(links.length, LINKS_MAX);
+  const lines = links.slice(0, max).map((l, i) => `${i + 1}. ${l.title ? `${l.title}: ` : ''}${l.url}`);
+  return lines.join('\n');
 }
 
 async function askLLMWithMemory(userJid, userMessage) {
@@ -169,7 +200,7 @@ async function askLLMWithMemory(userJid, userMessage) {
       }
       const data = await res.json();
       const reply = data?.message?.content?.trim() || data?.response?.trim() || 'Desculpe, não consegui gerar uma resposta agora.';
-      return enforceConciseness(reply);
+      return enforceConciseness(formatLinksIfPresent(reply));
     } catch (e) {
       if (e?.name === 'AbortError') {
         return 'Desculpe, estou demorando para responder. Tente novamente com uma pergunta mais objetiva.';
@@ -210,7 +241,7 @@ async function askLLMWithMemory(userJid, userMessage) {
 
   const data = await res.json();
   const reply = data.choices?.[0]?.message?.content?.trim() || 'Desculpe, não consegui gerar uma resposta agora.';
-  return enforceConciseness(reply);
+  return enforceConciseness(formatLinksIfPresent(reply));
 }
 
 // ---------- WhatsApp via Baileys ----------
