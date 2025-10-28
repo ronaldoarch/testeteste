@@ -322,6 +322,97 @@ app.post('/api/settings', basicAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+// ---------- Diagnóstico LLM ----------
+app.get('/api/llm', basicAuth, (req, res) => {
+  res.json({
+    provider: LLM_PROVIDER,
+    openai: {
+      configured: Boolean(OPENAI_API_KEY),
+      model: OPENAI_MODEL
+    },
+    ollama: {
+      host: OLLAMA_HOST,
+      model: OLLAMA_MODEL
+    },
+    limits: {
+      HISTORY_LIMIT,
+      MAX_TOKENS,
+      LLM_TIMEOUT_MS,
+      REPLY_SENTENCES_LIMIT
+    }
+  });
+});
+
+app.post('/api/test-llm', basicAuth, async (req, res) => {
+  const { prompt } = req.body || {};
+  const userPrompt = typeof prompt === 'string' && prompt.trim() ? prompt.trim() : 'Responda apenas: OK';
+
+  // Monta mensagens mínimas para teste
+  const messages = [
+    { role: 'system', content: 'Teste de diagnóstico do servidor. Responda de forma breve.' },
+    { role: 'user', content: userPrompt }
+  ];
+
+  try {
+    if (LLM_PROVIDER === 'ollama') {
+      const controller = new AbortController();
+      const to = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
+      const r = await fetch(`${OLLAMA_HOST}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: OLLAMA_MODEL,
+          messages,
+          stream: false,
+          options: { temperature: 0.2, num_predict: MAX_TOKENS }
+        }),
+        signal: controller.signal
+      });
+      clearTimeout(to);
+      if (!r.ok) {
+        const text = await r.text();
+        return res.status(502).json({ ok: false, provider: 'ollama', error: text });
+      }
+      const data = await r.json();
+      const reply = data?.message?.content?.trim() || data?.response?.trim() || '';
+      return res.json({ ok: true, provider: 'ollama', model: OLLAMA_MODEL, reply: enforceConciseness(reply) });
+    }
+
+    // default OpenAI
+    if (!OPENAI_API_KEY) return res.status(400).json({ ok: false, error: 'OPENAI_API_KEY ausente', provider: 'openai' });
+    const controller = new AbortController();
+    const to = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
+    const r = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: OPENAI_MODEL,
+        temperature: 0.2,
+        max_tokens: MAX_TOKENS,
+        messages
+      }),
+      signal: controller.signal
+    });
+    clearTimeout(to);
+    if (!r.ok) {
+      const text = await r.text();
+      return res.status(502).json({ ok: false, provider: 'openai', error: text });
+    }
+    const data = await r.json();
+    const reply = data.choices?.[0]?.message?.content?.trim() || '';
+    return res.json({ ok: true, provider: 'openai', model: OPENAI_MODEL, reply: enforceConciseness(reply) });
+  } catch (e) {
+    if (e?.name === 'AbortError') {
+      return res.status(504).json({ ok: false, error: 'Tempo esgotado', provider: LLM_PROVIDER });
+    }
+    console.error('test-llm error:', e);
+    return res.status(500).json({ ok: false, error: 'Falha interna no teste', provider: LLM_PROVIDER });
+  }
+});
+
 // ---------- QR por HTTP ----------
 app.get('/admin/qr.png', basicAuth, async (req, res) => {
   res.set('Cache-Control', 'no-store');
