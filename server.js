@@ -413,6 +413,22 @@ app.post('/api/test-llm', basicAuth, async (req, res) => {
   }
 });
 
+// GET helper para teste rápido via navegador: /api/test-llm?q=...
+app.get('/api/test-llm', basicAuth, async (req, res) => {
+  const q = typeof req.query.q === 'string' && req.query.q.trim() ? req.query.q.trim() : 'Responda apenas: OK';
+  try {
+    const r = await fetch(`${req.protocol}://${req.get('host')}/api/test-llm`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', authorization: req.headers.authorization || '' },
+      body: JSON.stringify({ prompt: q })
+    });
+    const data = await r.text();
+    res.type('application/json').send(data);
+  } catch (e) {
+    res.status(500).json({ ok: false, error: 'Falha ao redirecionar para POST /api/test-llm' });
+  }
+});
+
 // ---------- QR por HTTP ----------
 app.get('/admin/qr.png', basicAuth, async (req, res) => {
   res.set('Cache-Control', 'no-store');
