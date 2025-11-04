@@ -8,7 +8,7 @@ import fs from 'fs';
 import Database from 'better-sqlite3';
 import QRCode from 'qrcode';
 import pino from 'pino';
-import makeWASocket, { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } from '@whiskeysockets/baileys';
+import makeWASocket, { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, downloadMediaMessage } from '@whiskeysockets/baileys';
 
 dotenv.config();
 
@@ -59,7 +59,30 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_conversations_user_ts ON conversations(user_jid, ts DESC);
 `);
 db.prepare('INSERT OR IGNORE INTO settings (id, system_prompt, temperature) VALUES (1, ?, ?)').run(
-  'Você é um assistente do WhatsApp. Responda com clareza e objetividade, em português.',
+  `Você é um assistente carinhoso e atencioso da Cravo da Sorte, a plataforma de jogo do bicho online mais segura e fácil de usar.
+
+SOBRE O JOGO DO BICHO NA CRAVO DA SORTE:
+- É um jogo tradicional brasileiro, agora 100% online e seguro
+- Temos 25 animais, cada um com 4 números (exemplo: Avestruz 01-02-03-04)
+- Você pode apostar em: Milhar (4 números), Centena (3 números), Dezena (2 números) ou Grupo (animal)
+- Resultados rápidos e saques instantâneos via Pix
+- Plataforma segura, sem burocracia
+
+COMO FUNCIONA:
+1. Cadastro rápido e fácil em ${process.env.MAIN_LINK || 'https://cravodasorte.net'}
+2. Faça um depósito via Pix (valores a partir de R$ 10)
+3. Escolha seus números ou animais favoritos
+4. Acompanhe os resultados ao vivo
+5. Ganhou? Saque na hora via Pix!
+
+ESTILO DE COMUNICAÇÃO:
+- Seja sempre carinhoso, use emojis com moderação 😊
+- Trate o cliente com respeito e atenção
+- Explique de forma clara, mas não seja técnico demais
+- Sempre inclua o link quando relevante
+- Demonstre entusiasmo pela plataforma
+
+Responda de acordo com o contexto da pergunta do cliente.`,
   0.7
 );
 
@@ -159,6 +182,7 @@ function resetConversation(userJid) {
 const LLM_PROVIDER = (process.env.LLM_PROVIDER || 'openai').toLowerCase();
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+const OPENAI_VISION_MODEL = process.env.OPENAI_VISION_MODEL || 'gpt-4o'; // Modelo com suporte a visão
 const OLLAMA_HOST = process.env.OLLAMA_HOST || 'http://localhost:11434';
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'llama3.1';
 
@@ -167,7 +191,12 @@ const HISTORY_LIMIT = Number(process.env.HISTORY_LIMIT || 10);
 const MAX_TOKENS = Number(process.env.MAX_TOKENS || 600); // Aumentado para permitir respostas completas
 const LLM_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS || 15000);
 const MAX_CHARS = Number(process.env.MAX_CHARS || 1000); // Limite razoável para WhatsApp
-const CONCISE_HINT = process.env.CONCISE_HINT || 'Responda de forma clara e objetiva em português. Mantenha as respostas concisas mas completas (máximo 3-4 frases). Se mencionar links, forneça a URL completa.';
+const CONCISE_HINT = process.env.CONCISE_HINT || `Responda de forma carinhosa, clara e objetiva em português. 
+Use emojis apropriadamente (😊 💚 🎯 💰).
+Sempre seja prestativo e demonstre entusiasmo pela Cravo da Sorte.
+Quando o cliente perguntar sobre o jogo, explique de forma didática.
+Inclua o link ${process.env.MAIN_LINK || 'https://cravodasorte.net'} quando falar sobre cadastro ou jogar.
+Máximo de 4-5 frases por resposta, mas seja completo.`;
 const LINKS_MAX = Number(process.env.LINKS_MAX || 5);
 const MAIN_LINK = process.env.MAIN_LINK || 'https://cravodasorte.net';
 
@@ -242,6 +271,80 @@ function formatLinksIfPresent(text) {
     return `${i + 1}. ${label}: ${l.url}`;
   });
   return lines.join('\n');
+}
+
+// Função para analisar imagens com GPT-4 Vision
+async function analyzeImageWithVision(imageBuffer, userPrompt = 'O que você vê nesta imagem?') {
+  if (!OPENAI_API_KEY) {
+    return 'Desculpe, a análise de imagens não está configurada no momento.';
+  }
+
+  try {
+    const { system_prompt } = getSettings();
+    const base64Image = imageBuffer.toString('base64');
+    
+    const messages = [
+      {
+        role: 'system',
+        content: system_prompt + '\n\nVocê também pode analisar imagens. Seja descritivo e útil ao explicar o que vê.'
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text: userPrompt
+          },
+          {
+            type: 'image_url',
+            image_url: {
+              url: `data:image/jpeg;base64,${base64Image}`,
+              detail: 'auto'
+            }
+          }
+        ]
+      }
+    ];
+
+    const controller = new AbortController();
+    const to = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS * 2); // Dobro do tempo para imagens
+    
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: OPENAI_VISION_MODEL,
+        temperature: 0.7,
+        max_tokens: 800, // Mais tokens para descrição de imagens
+        messages
+      }),
+      signal: controller.signal
+    });
+    
+    clearTimeout(to);
+
+    if (!res.ok) {
+      const text = await res.text();
+      console.error('OpenAI Vision error:', res.status, text);
+      return 'Desculpe, tive um problema ao analisar a imagem.';
+    }
+
+    const data = await res.json();
+    const rawReply = data.choices?.[0]?.message?.content?.trim() || 'Não consegui analisar essa imagem.';
+    console.log('[Vision] Raw reply length:', rawReply.length);
+    const sanitized = sanitizeText(rawReply);
+    console.log('[Vision] Sanitized reply length:', sanitized.length);
+    return enforceConciseness(sanitized);
+  } catch (e) {
+    if (e?.name === 'AbortError') {
+      return 'Desculpe, a análise da imagem está demorando muito. Tente novamente com uma imagem menor.';
+    }
+    console.error('Vision analysis error:', e);
+    return 'Desculpe, tive um problema ao analisar a imagem.';
+  }
 }
 
 async function askLLMWithMemory(userJid, userMessage) {
@@ -376,6 +479,8 @@ async function startWhatsApp() {
     if (!msg || !msg.key?.remoteJid || msg.key.fromMe) return;
 
     const userJid = msg.key.remoteJid; // ex: 5511999999999@s.whatsapp.net
+    
+    // Extrai texto da mensagem
     const rawText =
       msg.message?.conversation ||
       msg.message?.extendedTextMessage?.text ||
@@ -384,9 +489,71 @@ async function startWhatsApp() {
       '';
     
     const text = sanitizeText(rawText);
+    
+    // Detecta se há uma imagem na mensagem
+    const hasImage = Boolean(msg.message?.imageMessage);
+    const imageMessage = msg.message?.imageMessage;
 
-    if (!text) {
-      await sock.sendMessage(userJid, { text: 'No momento, respondo apenas mensagens de texto.' });
+    // Se for apenas imagem sem texto
+    if (hasImage && !text) {
+      try {
+        await sock.sendPresenceUpdate('composing', userJid);
+        
+        // Baixa a imagem
+        console.log('[Image] Downloading image...');
+        const buffer = await downloadMediaMessage(msg, 'buffer', {});
+        
+        console.log('[Image] Analyzing with Vision API...');
+        const analysis = await analyzeImageWithVision(
+          buffer,
+          'Analise esta imagem e descreva o que você vê. Se for relacionado ao jogo do bicho ou apostas, forneça informações úteis. Seja carinhoso e prestativo. 😊'
+        );
+        
+        saveMessage(userJid, 'assistant', analysis);
+        await sock.sendMessage(userJid, { text: analysis });
+        await sock.sendPresenceUpdate('paused', userJid);
+        return;
+      } catch (e) {
+        console.error('Image processing error:', e);
+        await sock.sendMessage(userJid, { 
+          text: 'Desculpe, tive um problema ao analisar sua imagem. 😔 Pode tentar novamente ou me enviar uma mensagem de texto?' 
+        });
+        return;
+      }
+    }
+    
+    // Se for imagem com legenda/texto
+    if (hasImage && text) {
+      try {
+        await sock.sendPresenceUpdate('composing', userJid);
+        
+        // Baixa a imagem
+        console.log('[Image] Downloading image with caption...');
+        const buffer = await downloadMediaMessage(msg, 'buffer', {});
+        
+        console.log('[Image] Analyzing with Vision API and caption...');
+        const analysis = await analyzeImageWithVision(
+          buffer,
+          `O usuário enviou esta imagem com a mensagem: "${text}"\n\nResponda de forma contextualizada, analisando a imagem e respondendo à pergunta. Seja carinhoso e prestativo. 😊`
+        );
+        
+        saveMessage(userJid, 'user', `[Imagem] ${text}`);
+        saveMessage(userJid, 'assistant', analysis);
+        await sock.sendMessage(userJid, { text: analysis });
+        await sock.sendPresenceUpdate('paused', userJid);
+        return;
+      } catch (e) {
+        console.error('Image with caption processing error:', e);
+        await sock.sendMessage(userJid, { 
+          text: 'Desculpe, tive um problema ao analisar sua imagem. 😔 Pode tentar novamente ou me enviar uma mensagem de texto?' 
+        });
+        return;
+      }
+    }
+
+    // Se não tiver texto nem imagem
+    if (!text && !hasImage) {
+      await sock.sendMessage(userJid, { text: 'Olá! 😊 Envie uma mensagem de texto ou imagem que eu te ajudo!' });
       return;
     }
 
@@ -417,20 +584,32 @@ async function startWhatsApp() {
         sock.sendPresenceUpdate('composing', userJid).catch(() => {});
       }, 7000);
 
-      // Regras rápidas: respostas curtas, explicativas, com link
+      // Regras rápidas: respostas carinhosas e contextualizadas
       const t = text.trim().toLowerCase();
-      const saidYes = /\b(sim|já joguei|ja joguei)\b/.test(t) && t.length <= 25;
-      const saidNever = /(nunca\s*joguei|nao\s*joguei|não\s*joguei|primeira\s*vez)/.test(t);
+      const saidYes = /\b(sim|já joguei|ja joguei|sim já|claro|com certeza)\b/.test(t) && t.length <= 30;
+      const saidNever = /(nunca\s*joguei|nao\s*joguei|não\s*joguei|primeira\s*vez|nunca|não conheço|nao conheço)/.test(t);
+      const askingHow = /(como funciona|como jog|como faço|como faz|como é|explica|funciona como|quero saber|me ensina)/.test(t);
+      
       if (saidYes) {
-        const quick = `Muito bem! Estou te enviando o link para iniciar suas jogadas: ${MAIN_LINK}`;
+        const quick = `Que ótimo! 😊 Fico feliz que você já conhece!\n\nAqui está o link para você começar suas jogadas na Cravo da Sorte:\n${MAIN_LINK}\n\nÉ super fácil: faça seu cadastro, deposite via Pix e comece a jogar! Qualquer dúvida, estou aqui pra te ajudar! 💚`;
         saveMessage(userJid, 'assistant', quick);
         await sock.sendMessage(userJid, { text: quick });
         clearInterval(typingInterval);
         try { await sock.sendPresenceUpdate('paused', userJid); } catch {}
         return;
       }
+      
       if (saidNever) {
-        const quick = `Entendo perfeitamente! Aqui está o link para se cadastrar e começar: ${MAIN_LINK}. Qualquer dúvida, pode falar comigo por aqui.`;
+        const quick = `Sem problemas! 😊 Vou te explicar rapidinho:\n\nO jogo do bicho é um jogo tradicional brasileiro com 25 animais. Você escolhe um animal ou números e faz sua aposta. Se acertar, ganha!\n\nNa Cravo da Sorte é tudo online, seguro e você saca na hora via Pix! 🎯\n\nQuer começar? Aqui está o link:\n${MAIN_LINK}\n\nSe tiver alguma dúvida, pode perguntar! Estou aqui pra te ajudar! 💚`;
+        saveMessage(userJid, 'assistant', quick);
+        await sock.sendMessage(userJid, { text: quick });
+        clearInterval(typingInterval);
+        try { await sock.sendPresenceUpdate('paused', userJid); } catch {}
+        return;
+      }
+      
+      if (askingHow) {
+        const quick = `Fico feliz em explicar! 😊\n\n🎮 COMO FUNCIONA:\n\n1️⃣ Cadastre-se (é rapidinho!)\n2️⃣ Deposite via Pix (a partir de R$10)\n3️⃣ Escolha seus números da sorte ou animais\n4️⃣ Acompanhe o resultado ao vivo\n5️⃣ Ganhou? Saque na hora! 💰\n\nTemos 25 animais, cada um com 4 números. Você pode apostar em:\n• Milhar (4 números)\n• Centena (3 números)\n• Dezena (2 números)\n• Grupo (o animal)\n\nÉ super fácil e seguro! Quer começar?\n${MAIN_LINK}\n\nSe tiver mais dúvidas, é só chamar! 💚`;
         saveMessage(userJid, 'assistant', quick);
         await sock.sendMessage(userJid, { text: quick });
         clearInterval(typingInterval);
