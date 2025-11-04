@@ -68,6 +68,45 @@ const getSettings = () =>
 const updateSettings = (prompt, temperature) =>
   db.prepare('UPDATE settings SET system_prompt=?, temperature=? WHERE id=1').run(prompt, temperature);
 
+// ----- Sanitização de texto -----
+function sanitizeText(text) {
+  if (!text || typeof text !== 'string') return '';
+  
+  // Remove caracteres de controle problemáticos, mantém apenas UTF-8 válido
+  let sanitized = text
+    .replace(/[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F]/g, '') // Remove controle chars exceto \n e \t
+    .replace(/[\uFFFE-\uFFFF]/g, ''); // Remove caracteres não válidos em UTF-16
+  
+  // Remove sequências estranhas de caracteres misturados (heurística)
+  // Detecta padrões como múltiplos scripts misturados sem espaços
+  const suspiciousPattern = /[\u0400-\u04FF][\u0590-\u05FF][\u0600-\u06FF]/;
+  if (suspiciousPattern.test(sanitized)) {
+    // Se detectar múltiplos scripts misturados, tenta limpar
+    sanitized = sanitized.split(/\s+/).filter(word => {
+      // Mantém palavras que são principalmente de um script
+      const latin = (word.match(/[a-zA-Z]/g) || []).length;
+      const cyrillic = (word.match(/[\u0400-\u04FF]/g) || []).length;
+      const arabic = (word.match(/[\u0600-\u06FF]/g) || []).length;
+      const hebrew = (word.match(/[\u0590-\u05FF]/g) || []).length;
+      const asian = (word.match(/[\u4e00-\u9FFF\u3400-\u4DBF\uAC00-\uD7AF\u0E00-\u0E7F]/g) || []).length;
+      
+      const total = latin + cyrillic + arabic + hebrew + asian;
+      if (total === 0) return true; // Sem caracteres especiais, mantém
+      // Mantém se pelo menos 80% dos caracteres são de um único script
+      const maxScript = Math.max(latin, cyrillic, arabic, hebrew, asian);
+      return maxScript / total >= 0.8;
+    }).join(' ');
+  }
+  
+  // Limita tamanho máximo para evitar mensagens gigantes
+  const MAX_LENGTH = 10000;
+  if (sanitized.length > MAX_LENGTH) {
+    sanitized = sanitized.substring(0, MAX_LENGTH) + '...[truncado]';
+  }
+  
+  return sanitized.trim();
+}
+
 // ----- Conversas: memória por usuário -----
 const insertMsgStmt = db.prepare(`
   INSERT INTO conversations (user_jid, role, content, ts) VALUES (?, ?, ?, ?)
@@ -95,11 +134,18 @@ const deleteAllStmt = db.prepare(`
 `);
 
 function saveMessage(userJid, role, content) {
-  insertMsgStmt.run(userJid, role, content, Date.now());
+  const sanitized = sanitizeText(content);
+  if (sanitized) {
+    insertMsgStmt.run(userJid, role, sanitized, Date.now());
+  }
 }
 function getRecentConversation(userJid, limit = 10) {
   const rows = selectRecentStmt.all(userJid, limit);
-  return rows.reverse(); // devolve em ordem cronológica crescente
+  // Sanitiza as mensagens recuperadas do histórico
+  return rows.map(row => ({
+    role: row.role,
+    content: sanitizeText(row.content)
+  })).reverse(); // devolve em ordem cronológica crescente
 }
 function trimConversation(userJid, keep = 10) {
   const { c } = countStmt.get(userJid);
@@ -117,21 +163,40 @@ const OLLAMA_HOST = process.env.OLLAMA_HOST || 'http://localhost:11434';
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'llama3.1';
 
 // Limites e controle de latência/conciso
-const HISTORY_LIMIT = Number(process.env.HISTORY_LIMIT || 6);
-const MAX_TOKENS = Number(process.env.MAX_TOKENS || 120);
+const HISTORY_LIMIT = Number(process.env.HISTORY_LIMIT || 10);
+const MAX_TOKENS = Number(process.env.MAX_TOKENS || 600); // Aumentado para permitir respostas completas
 const LLM_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS || 15000);
-const REPLY_SENTENCES_LIMIT = Number(process.env.REPLY_SENTENCES_LIMIT || 2);
-const CONCISE_HINT = process.env.CONCISE_HINT || 'Seja objetivo e responda em português. Se listar itens, inclua todas as URLs completas (sem encurtar). Evite dizer que enviará links; forneça-os diretamente. Priorize clareza e completude sobre concisão extrema.';
+const MAX_CHARS = Number(process.env.MAX_CHARS || 1000); // Limite razoável para WhatsApp
+const CONCISE_HINT = process.env.CONCISE_HINT || 'Responda de forma clara e objetiva em português. Mantenha as respostas concisas mas completas (máximo 3-4 frases). Se mencionar links, forneça a URL completa.';
 const LINKS_MAX = Number(process.env.LINKS_MAX || 5);
 const MAIN_LINK = process.env.MAIN_LINK || 'https://cravodasorte.net';
 
 function enforceConciseness(text) {
   if (!text || typeof text !== 'string') return text;
-  const maxChars = Number(process.env.MAX_CHARS || 450);
-  const sentences = text.split(/(?<=[.!?])\s+/);
-  const trimmed = sentences.slice(0, REPLY_SENTENCES_LIMIT).join(' ').trim();
-  let result = trimmed || text.trim();
-  if (result.length > maxChars) result = result.slice(0, maxChars).trim() + '…';
+  
+  // Apenas limita o tamanho máximo sem cortar sentenças no meio
+  let result = text.trim();
+  
+  // Se exceder o limite, tenta cortar em uma quebra de frase natural
+  if (result.length > MAX_CHARS) {
+    const truncated = result.substring(0, MAX_CHARS);
+    // Procura pelo último ponto final, exclamação ou interrogação
+    const lastBreak = Math.max(
+      truncated.lastIndexOf('.'),
+      truncated.lastIndexOf('!'),
+      truncated.lastIndexOf('?')
+    );
+    
+    if (lastBreak > MAX_CHARS * 0.7) {
+      // Se encontrou uma quebra natural em pelo menos 70% do texto, usa ela
+      result = truncated.substring(0, lastBreak + 1).trim();
+    } else {
+      // Senão, corta no espaço mais próximo
+      const lastSpace = truncated.lastIndexOf(' ');
+      result = truncated.substring(0, lastSpace > 0 ? lastSpace : MAX_CHARS).trim() + '…';
+    }
+  }
+  
   return result;
 }
 
@@ -214,8 +279,11 @@ async function askLLMWithMemory(userJid, userMessage) {
         return 'Desculpe, tive um problema ao gerar a resposta.';
       }
       const data = await res.json();
-      const reply = data?.message?.content?.trim() || data?.response?.trim() || 'Desculpe, não consegui gerar uma resposta agora.';
-      return enforceConciseness(formatLinksIfPresent(reply));
+      const rawReply = data?.message?.content?.trim() || data?.response?.trim() || 'Desculpe, não consegui gerar uma resposta agora.';
+      console.log('[Ollama] Raw reply length:', rawReply.length);
+      const sanitized = sanitizeText(rawReply);
+      console.log('[Ollama] Sanitized reply length:', sanitized.length);
+      return enforceConciseness(formatLinksIfPresent(sanitized));
     } catch (e) {
       if (e?.name === 'AbortError') {
         return 'Desculpe, estou demorando para responder. Tente novamente com uma pergunta mais objetiva.';
@@ -255,8 +323,12 @@ async function askLLMWithMemory(userJid, userMessage) {
   }
 
   const data = await res.json();
-  const reply = data.choices?.[0]?.message?.content?.trim() || 'Desculpe, não consegui gerar uma resposta agora.';
-  return enforceConciseness(formatLinksIfPresent(reply));
+  const rawReply = data.choices?.[0]?.message?.content?.trim() || 'Desculpe, não consegui gerar uma resposta agora.';
+  console.log('[OpenAI] Raw reply length:', rawReply.length);
+  console.log('[OpenAI] First 200 chars:', rawReply.substring(0, 200));
+  const sanitized = sanitizeText(rawReply);
+  console.log('[OpenAI] Sanitized reply length:', sanitized.length);
+  return enforceConciseness(formatLinksIfPresent(sanitized));
 }
 
 // ---------- WhatsApp via Baileys ----------
@@ -304,22 +376,31 @@ async function startWhatsApp() {
     if (!msg || !msg.key?.remoteJid || msg.key.fromMe) return;
 
     const userJid = msg.key.remoteJid; // ex: 5511999999999@s.whatsapp.net
-    const text =
+    const rawText =
       msg.message?.conversation ||
       msg.message?.extendedTextMessage?.text ||
       msg.message?.imageMessage?.caption ||
       msg.message?.videoMessage?.caption ||
       '';
+    
+    const text = sanitizeText(rawText);
 
     if (!text) {
       await sock.sendMessage(userJid, { text: 'No momento, respondo apenas mensagens de texto.' });
       return;
     }
 
-    // Comando /reset
+    // Comandos especiais
     if (text.trim().toLowerCase() === '/reset') {
       resetConversation(userJid);
       await sock.sendMessage(userJid, { text: 'Memória desta conversa foi apagada. Podemos recomeçar! ✨' });
+      return;
+    }
+    
+    if (text.trim().toLowerCase() === '/debug') {
+      const history = getRecentConversation(userJid, 5);
+      const info = `Debug Info:\n- Histórico: ${history.length} mensagens\n- Modelo: ${OPENAI_MODEL}\n- Max Tokens: ${MAX_TOKENS}\n- Provider: ${LLM_PROVIDER}`;
+      await sock.sendMessage(userJid, { text: info });
       return;
     }
 
@@ -359,12 +440,13 @@ async function startWhatsApp() {
 
       const reply = await askLLMWithMemory(userJid, text);
 
-      // salva resposta do assistente
-      saveMessage(userJid, 'assistant', reply);
+      // salva resposta do assistente (já sanitizada pela função)
+      const sanitizedReply = sanitizeText(reply);
+      saveMessage(userJid, 'assistant', sanitizedReply);
 
       // mantém só os últimos N registros
       trimConversation(userJid, 20); // mantém ~20 mensagens (10 pares)
-      await sock.sendMessage(userJid, { text: reply });
+      await sock.sendMessage(userJid, { text: sanitizedReply });
       clearInterval(typingInterval);
       try { await sock.sendPresenceUpdate('paused', userJid); } catch {}
     } catch (e) {
