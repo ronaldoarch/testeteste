@@ -61,6 +61,12 @@ db.exec(`
 db.prepare('INSERT OR IGNORE INTO settings (id, system_prompt, temperature) VALUES (1, ?, ?)').run(
   `Você é um assistente carinhoso e atencioso da Cravo da Sorte, a plataforma de jogo do bicho online mais segura e fácil de usar.
 
+REGRA CRÍTICA DE IDIOMA:
+- Você DEVE responder APENAS em PORTUGUÊS BRASILEIRO
+- NUNCA use inglês, espanhol, russo, árabe, chinês ou qualquer outro idioma
+- Todas as suas respostas devem ser 100% em português
+- Se o cliente escrever em outro idioma, responda em português mesmo assim
+
 SOBRE O JOGO DO BICHO NA CRAVO DA SORTE:
 - É um jogo tradicional brasileiro, agora 100% online e seguro
 - Temos 25 animais, cada um com 4 números (exemplo: Avestruz 01-02-03-04)
@@ -81,8 +87,9 @@ ESTILO DE COMUNICAÇÃO:
 - Explique de forma clara, mas não seja técnico demais
 - Sempre inclua o link quando relevante
 - Demonstre entusiasmo pela plataforma
+- SEMPRE responda em português brasileiro
 
-Responda de acordo com o contexto da pergunta do cliente.`,
+Responda de acordo com o contexto da pergunta do cliente, sempre em português.`,
   0.7
 );
 
@@ -191,7 +198,9 @@ const HISTORY_LIMIT = Number(process.env.HISTORY_LIMIT || 10);
 const MAX_TOKENS = Number(process.env.MAX_TOKENS || 600); // Aumentado para permitir respostas completas
 const LLM_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS || 15000);
 const MAX_CHARS = Number(process.env.MAX_CHARS || 1000); // Limite razoável para WhatsApp
-const CONCISE_HINT = process.env.CONCISE_HINT || `Responda de forma carinhosa, clara e objetiva em português. 
+const CONCISE_HINT = process.env.CONCISE_HINT || `IMPORTANTE: Você DEVE responder APENAS em PORTUGUÊS BRASILEIRO. Nunca use outros idiomas como inglês, espanhol, russo, árabe ou qualquer outro. Todas as suas respostas devem ser exclusivamente em português.
+
+Responda de forma carinhosa, clara e objetiva em português. 
 Use emojis apropriadamente (😊 💚 🎯 💰).
 Sempre seja prestativo e demonstre entusiasmo pela Cravo da Sorte.
 Quando o cliente perguntar sobre o jogo, explique de forma didática.
@@ -286,7 +295,7 @@ async function analyzeImageWithVision(imageBuffer, userPrompt = 'O que você vê
     const messages = [
       {
         role: 'system',
-        content: system_prompt + '\n\nVocê também pode analisar imagens. Seja descritivo e útil ao explicar o que vê.'
+        content: system_prompt + '\n\nVocê também pode analisar imagens. Seja descritivo e útil ao explicar o que vê. IMPORTANTE: Responda APENAS em português brasileiro.'
       },
       {
         role: 'user',
@@ -356,6 +365,7 @@ async function askLLMWithMemory(userJid, userMessage) {
   const messages = [
     { role: 'system', content: system_prompt },
     { role: 'system', content: CONCISE_HINT },
+    { role: 'system', content: 'Lembre-se: responda APENAS em português brasileiro. Nunca use outros idiomas.' },
     ...history.map(h => ({ role: h.role, content: h.content })),
     { role: 'user', content: userMessage }
   ];
@@ -666,7 +676,7 @@ app.get('/api/llm', basicAuth, (req, res) => {
       HISTORY_LIMIT,
       MAX_TOKENS,
       LLM_TIMEOUT_MS,
-      REPLY_SENTENCES_LIMIT
+      MAX_CHARS
     }
   });
 });
@@ -772,6 +782,51 @@ app.get('/admin/qr.png', basicAuth, async (req, res) => {
 
 app.get('/admin/status', basicAuth, (req, res) => {
   res.json({ connected, hasQR: Boolean(latestQR) });
+});
+
+// ---------- Desconectar WhatsApp ----------
+async function disconnectWhatsApp() {
+  try {
+    if (sock) {
+      await sock.logout();
+      sock.end();
+      sock = null;
+    }
+  } catch (e) {
+    console.error('Erro ao fazer logout:', e);
+  }
+  
+  // Limpa os arquivos de autenticação
+  const authDir = path.join(__dirname, 'data', 'baileys-auth');
+  try {
+    if (fs.existsSync(authDir)) {
+      const files = fs.readdirSync(authDir);
+      for (const file of files) {
+        fs.unlinkSync(path.join(authDir, file));
+      }
+      console.log('Arquivos de autenticação removidos');
+    }
+  } catch (e) {
+    console.error('Erro ao limpar autenticação:', e);
+  }
+  
+  connected = false;
+  latestQR = null;
+  
+  // Reinicia a conexão para gerar novo QR
+  setTimeout(() => {
+    startWhatsApp().catch(e => console.error('Erro ao reiniciar WhatsApp:', e));
+  }, 1000);
+}
+
+app.post('/api/disconnect', basicAuth, async (req, res) => {
+  try {
+    await disconnectWhatsApp();
+    res.json({ ok: true, message: 'WhatsApp desconectado. Um novo QR será gerado em breve.' });
+  } catch (e) {
+    console.error('Erro ao desconectar:', e);
+    res.status(500).json({ ok: false, error: 'Erro ao desconectar WhatsApp' });
+  }
 });
 
 // ---------- Frontend estático ----------

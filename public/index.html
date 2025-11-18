@@ -72,6 +72,12 @@
           <button id="saveBtn">Salvar</button>
           <span id="status"></span>
         </div>
+        
+        <div style="margin-top:16px; padding-top:16px; border-top:1px solid var(--stroke);">
+          <label style="margin-bottom:8px;">Gerenciar Conexão WhatsApp</label>
+          <button id="disconnectBtn" style="background:linear-gradient(180deg, #2a1a1a, #1a0f0f); border-color:#c33; color:#ff6b6b;">Desconectar WhatsApp</button>
+          <span id="disconnectStatus" style="margin-left:8px;"></span>
+        </div>
       </div>
     </div>
 
@@ -85,6 +91,8 @@
       const connText = document.getElementById('connText');
       const qrImg = document.getElementById('qrImg');
       const qrHint = document.getElementById('qrHint');
+      const disconnectBtn = document.getElementById('disconnectBtn');
+      const disconnectStatus = document.getElementById('disconnectStatus');
 
       async function loadSettings() {
         const res = await fetch('/api/settings');
@@ -126,6 +134,35 @@
         } catch {
           statusEl.textContent = 'Erro de rede';
           statusEl.className = 'err';
+        }
+      });
+
+      disconnectBtn.addEventListener('click', async () => {
+        if (!confirm('Tem certeza que deseja desconectar o WhatsApp? Isso irá limpar a autenticação atual e gerar um novo QR para conectar um novo número.')) {
+          return;
+        }
+        disconnectStatus.textContent = 'Desconectando...';
+        disconnectStatus.className = '';
+        disconnectBtn.disabled = true;
+        try {
+          const res = await fetch('/api/disconnect', { method: 'POST' });
+          const data = await res.json();
+          if (data.ok) {
+            disconnectStatus.textContent = 'Desconectado! Novo QR será gerado em breve.';
+            disconnectStatus.className = 'ok';
+            setTimeout(() => {
+              disconnectStatus.textContent = '';
+              disconnectBtn.disabled = false;
+            }, 3000);
+          } else {
+            disconnectStatus.textContent = data.error || 'Erro ao desconectar';
+            disconnectStatus.className = 'err';
+            disconnectBtn.disabled = false;
+          }
+        } catch {
+          disconnectStatus.textContent = 'Erro de rede';
+          disconnectStatus.className = 'err';
+          disconnectBtn.disabled = false;
         }
       });
 
