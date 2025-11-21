@@ -55,9 +55,38 @@
           <div id="connDot" class="status-dot" style="background:#444;"></div>
           <div id="connText">Verificando conexão…</div>
         </div>
-        <div style="margin-top:12px; display:grid; grid-template-columns: 1fr; gap: 12px;">
+        
+        <div style="margin-top:16px; padding-top:16px; border-top:1px solid var(--stroke);">
+          <label style="margin-bottom:8px;">Método de Conexão</label>
+          <div class="row" style="margin-bottom:12px;">
+            <button id="qrModeBtn" style="flex:1;">QR Code</button>
+            <button id="phoneModeBtn" style="flex:1; margin-left:8px;">Número de Telefone</button>
+          </div>
+        </div>
+        
+        <div id="qrSection" style="margin-top:12px; display:grid; grid-template-columns: 1fr; gap: 12px;">
           <img id="qrImg" alt="QR" style="display:none;border:1px dashed var(--gold);border-radius:12px;padding:10px; max-width: 320px;" />
           <div id="qrHint" class="muted" style="display:none;margin-top:2px;">Abra o WhatsApp → Aparelhos conectados → Conectar um aparelho e escaneie.</div>
+        </div>
+        
+        <div id="phoneSection" style="margin-top:12px; display:none; gap: 12px;">
+          <label for="phoneInput">Número de Telefone (com DDD e código do país)</label>
+          <input id="phoneInput" type="text" placeholder="5511999999999" style="width:100%; padding:12px 14px; font: inherit; background: var(--bg); color: var(--text); border: 1px solid var(--stroke); border-radius: 10px; outline: none; box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);" />
+          <div id="phoneCodeDisplay" style="display:none; margin-top:12px; padding:12px; background: var(--bg-elev); border: 1px solid var(--gold); border-radius: 10px;">
+            <div style="font-weight:600; margin-bottom:8px;">Código gerado:</div>
+            <div id="phoneCode" style="font-size:24px; font-weight:700; color: var(--gold); letter-spacing:4px; text-align:center; margin:8px 0;"></div>
+            <div class="muted" style="font-size:12px; margin-top:12px; line-height:1.6;">
+              <strong>Para usar este código:</strong><br/>
+              1. Acesse <a href="https://web.whatsapp.com" target="_blank" style="color:var(--gold);">web.whatsapp.com</a> no seu navegador<br/>
+              2. Clique em "Entrar com número de telefone"<br/>
+              3. Digite seu número e o código acima<br/><br/>
+              <strong>Ou use o QR code</strong> (método mais simples) - volte para o modo QR Code acima.
+            </div>
+          </div>
+          <div style="margin-top:12px;">
+            <button id="requestCodeBtn">Solicitar Código</button>
+            <span id="phoneStatus" style="margin-left:8px;"></span>
+          </div>
         </div>
       </div>
 
@@ -93,6 +122,17 @@
       const qrHint = document.getElementById('qrHint');
       const disconnectBtn = document.getElementById('disconnectBtn');
       const disconnectStatus = document.getElementById('disconnectStatus');
+      const qrModeBtn = document.getElementById('qrModeBtn');
+      const phoneModeBtn = document.getElementById('phoneModeBtn');
+      const qrSection = document.getElementById('qrSection');
+      const phoneSection = document.getElementById('phoneSection');
+      const phoneInput = document.getElementById('phoneInput');
+      const requestCodeBtn = document.getElementById('requestCodeBtn');
+      const phoneStatus = document.getElementById('phoneStatus');
+      const phoneCodeDisplay = document.getElementById('phoneCodeDisplay');
+      const phoneCode = document.getElementById('phoneCode');
+      
+      let currentMode = 'qr'; // 'qr' ou 'phone'
 
       async function loadSettings() {
         const res = await fetch('/api/settings');
@@ -105,18 +145,101 @@
       async function pollStatus() {
         try {
           const s = await (await fetch('/admin/status')).json();
-          connDot.style.background = s.connected ? '#0a7' : (s.hasQR ? '#f90' : '#c33');
-          connText.textContent = s.connected ? 'Conectado ao WhatsApp' : (s.hasQR ? 'Aguardando conexão: escaneie o QR' : 'Aguardando QR…');
-          if (s.hasQR) {
+          connDot.style.background = s.connected ? '#0a7' : (s.hasQR ? '#f90' : (s.phoneAuth?.active ? '#f90' : '#c33'));
+          
+          if (s.connected) {
+            connText.textContent = 'Conectado ao WhatsApp';
+            qrImg.style.display = 'none';
+            qrHint.style.display = 'none';
+            phoneCodeDisplay.style.display = 'none';
+          } else if (s.hasQR) {
+            connText.textContent = 'Aguardando conexão: escaneie o QR';
             qrImg.src = '/admin/qr.png?ts=' + Date.now();
             qrImg.style.display = 'block';
             qrHint.style.display = 'block';
+          } else if (s.phoneAuth?.active && s.phoneAuth.hasCode) {
+            connText.textContent = `Código gerado para: ${s.phoneAuth.phoneNumber}. Use no WhatsApp Web ou escaneie o QR code.`;
+            // Se tem QR code, mostra também
+            if (s.hasQR) {
+              qrImg.src = '/admin/qr.png?ts=' + Date.now();
+              qrImg.style.display = 'block';
+              qrHint.style.display = 'block';
+            }
           } else {
+            connText.textContent = 'Aguardando conexão…';
             qrImg.style.display = 'none';
             qrHint.style.display = 'none';
+            phoneCodeDisplay.style.display = 'none';
           }
         } catch {}
       }
+      
+      function switchMode(mode) {
+        currentMode = mode;
+        if (mode === 'qr') {
+          qrModeBtn.style.background = 'linear-gradient(180deg, #2a2a2d, #1a1a1d)';
+          qrModeBtn.style.borderColor = 'var(--gold)';
+          phoneModeBtn.style.background = 'linear-gradient(180deg, #1a1a1d, #0f0f11)';
+          phoneModeBtn.style.borderColor = 'var(--stroke)';
+          qrSection.style.display = 'grid';
+          phoneSection.style.display = 'none';
+        } else {
+          phoneModeBtn.style.background = 'linear-gradient(180deg, #2a2a2d, #1a1a1d)';
+          phoneModeBtn.style.borderColor = 'var(--gold)';
+          qrModeBtn.style.background = 'linear-gradient(180deg, #1a1a1d, #0f0f11)';
+          qrModeBtn.style.borderColor = 'var(--stroke)';
+          qrSection.style.display = 'none';
+          phoneSection.style.display = 'grid';
+        }
+      }
+      
+      async function requestCode() {
+        const phone = phoneInput.value.trim();
+        if (!phone) {
+          phoneStatus.textContent = 'Digite um número de telefone';
+          phoneStatus.className = 'err';
+          return;
+        }
+        
+        phoneStatus.textContent = 'Gerando código...';
+        phoneStatus.className = '';
+        requestCodeBtn.disabled = true;
+        
+        try {
+          const res = await fetch('/api/phone-auth/request', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ phoneNumber: phone })
+          });
+          const data = await res.json();
+          
+          if (data.ok) {
+            phoneCode.textContent = data.code;
+            phoneCodeDisplay.style.display = 'block';
+            phoneStatus.textContent = 'Código gerado! Use no WhatsApp Web.';
+            phoneStatus.className = 'ok';
+            requestCodeBtn.disabled = false;
+            
+            // Atualiza status após um momento para mostrar QR code se disponível
+            setTimeout(pollStatus, 2000);
+          } else {
+            phoneStatus.textContent = data.error || 'Erro ao gerar código';
+            phoneStatus.className = 'err';
+            requestCodeBtn.disabled = false;
+          }
+        } catch (e) {
+          phoneStatus.textContent = 'Erro de rede';
+          phoneStatus.className = 'err';
+          requestCodeBtn.disabled = false;
+        }
+      }
+      
+      qrModeBtn.addEventListener('click', () => switchMode('qr'));
+      phoneModeBtn.addEventListener('click', () => switchMode('phone'));
+      requestCodeBtn.addEventListener('click', requestCode);
+      
+      // Inicializa com modo QR
+      switchMode('qr');
 
       tempEl.addEventListener('input', () => tempValueEl.textContent = tempEl.value);
 

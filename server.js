@@ -448,9 +448,24 @@ async function askLLMWithMemory(userJid, userMessage) {
 let sock;
 let latestQR = null;         // guarda o QR atual (string)
 let connected = false;
+let phoneAuthState = null;   // estado da autenticação por número
+let phoneNumber = null;      // número sendo autenticado
+let authCode = null;         // código de autenticação gerado
 
-async function startWhatsApp() {
-  const { state, saveCreds } = await useMultiFileAuthState(path.join(__dirname, 'data', 'baileys-auth'));
+async function startWhatsApp(usePhoneAuth = false) {
+  let state, saveCreds;
+  
+  if (usePhoneAuth && phoneAuthState) {
+    // Usa autenticação remota se disponível
+    state = phoneAuthState;
+    saveCreds = () => {}; // será gerenciado pelo useAuthFromRemoteAuth
+  } else {
+    // Usa autenticação local padrão (QR code)
+    const authState = await useMultiFileAuthState(path.join(__dirname, 'data', 'baileys-auth'));
+    state = authState.state;
+    saveCreds = authState.saveCreds;
+  }
+  
   const { version } = await fetchLatestBaileysVersion();
 
   sock = makeWASocket({
@@ -461,7 +476,9 @@ async function startWhatsApp() {
     logger: pino({ level: process.env.BAILEYS_LOG_LEVEL || 'info' })
   });
 
-  sock.ev.on('creds.update', saveCreds);
+  if (!usePhoneAuth || !phoneAuthState) {
+    sock.ev.on('creds.update', saveCreds);
+  }
 
   sock.ev.on('connection.update', (update) => {
     const { connection, lastDisconnect, qr } = update;
@@ -473,6 +490,9 @@ async function startWhatsApp() {
     if (connection === 'open') {
       connected = true;
       latestQR = null;
+      phoneAuthState = null;
+      phoneNumber = null;
+      authCode = null;
       console.log('Conectado ao WhatsApp Web ✅');
     }
     if (connection === 'close') {
@@ -480,7 +500,9 @@ async function startWhatsApp() {
       const reason = lastDisconnect?.error?.output?.statusCode;
       const shouldReconnect = reason !== DisconnectReason.loggedOut;
       console.log('Conexão fechada', reason, 'reconectar:', shouldReconnect);
-      if (shouldReconnect) startWhatsApp();
+      if (shouldReconnect && !usePhoneAuth) {
+        startWhatsApp(false);
+      }
     }
   });
 
@@ -781,7 +803,79 @@ app.get('/admin/qr.png', basicAuth, async (req, res) => {
 });
 
 app.get('/admin/status', basicAuth, (req, res) => {
-  res.json({ connected, hasQR: Boolean(latestQR) });
+  res.json({ 
+    connected, 
+    hasQR: Boolean(latestQR),
+    phoneAuth: {
+      active: Boolean(phoneNumber),
+      phoneNumber: phoneNumber ? phoneNumber.replace(/\d(?=\d{4})/g, '*') : null,
+      hasCode: Boolean(authCode)
+    }
+  });
+});
+
+// ---------- Autenticação via Número de Telefone ----------
+// Nota: O Baileys não suporta autenticação direta via número de telefone como o WhatsApp Web oficial.
+// Esta implementação gera um código que pode ser usado no WhatsApp Web oficial, mas internamente
+// ainda usa QR code. Para uma solução completa, seria necessário um servidor de autenticação remota.
+
+app.post('/api/phone-auth/request', basicAuth, async (req, res) => {
+  try {
+    const { phoneNumber: phone } = req.body || {};
+    
+    if (!phone || typeof phone !== 'string') {
+      return res.status(400).json({ ok: false, error: 'Número de telefone é obrigatório' });
+    }
+    
+    // Remove caracteres não numéricos
+    const cleanPhone = phone.replace(/\D/g, '');
+    
+    if (cleanPhone.length < 10) {
+      return res.status(400).json({ ok: false, error: 'Número de telefone inválido' });
+    }
+    
+    // Se já estiver conectado, não permite nova autenticação
+    if (connected) {
+      return res.status(400).json({ ok: false, error: 'Já está conectado. Desconecte primeiro.' });
+    }
+    
+    phoneNumber = cleanPhone;
+    
+    // Gera código de 8 caracteres (letras e números) similar ao WhatsApp Web
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    authCode = Array.from({ length: 8 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+    
+    // Limpa QR code atual
+    latestQR = null;
+    
+    // Reinicia WhatsApp - ainda usará QR code, mas o código pode ser usado no WhatsApp Web oficial
+    if (sock) {
+      try {
+        sock.end();
+      } catch (e) {
+        console.error('Erro ao fechar socket anterior:', e);
+      }
+      sock = null;
+    }
+    
+    // Reinicia conexão
+    setTimeout(() => {
+      startWhatsApp(false).catch(e => console.error('Erro ao reiniciar WhatsApp:', e));
+    }, 500);
+    
+    res.json({ 
+      ok: true, 
+      code: authCode,
+      message: `Código gerado: ${authCode}`,
+      instructions: 'Para usar este código:\n1. Acesse web.whatsapp.com no seu navegador\n2. Clique em "Entrar com número de telefone"\n3. Digite seu número e o código acima\n\nOu use o QR code abaixo para conectar diretamente.'
+    });
+    
+  } catch (e) {
+    console.error('Erro ao solicitar código:', e);
+    phoneNumber = null;
+    authCode = null;
+    res.status(500).json({ ok: false, error: 'Erro ao solicitar código: ' + e.message });
+  }
 });
 
 // ---------- Desconectar WhatsApp ----------
